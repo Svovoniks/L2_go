@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
+	"os"
 	"unicode"
 )
 
@@ -91,14 +93,17 @@ func Unpack(str string) (*string, error) {
 }
 
 func main() {
-	ls := []string{"a4bc2d5e", "abcd", "45", "", "qwe\\4\\5", "qwe\\45", "qwe\\\\5"}
-
-	for _, st := range ls {
-		res, err := Unpack(st)
-		if err != nil {
-			fmt.Println("error", err)
-			continue
-		}
-		fmt.Println(string(*res))
+	scanner := bufio.NewScanner(os.Stdin)
+	if !scanner.Scan() {
+		fmt.Println("couldn't read input")
 	}
+
+	st := scanner.Text()
+
+	res, err := Unpack(st)
+	if err != nil {
+		fmt.Println("error", err)
+		return
+	}
+	fmt.Println(string(*res))
 }
