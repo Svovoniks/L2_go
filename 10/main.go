@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"net/http"
@@ -92,18 +93,27 @@ func storePage(curDir string, page string, path string) {
 }
 
 func main() {
-	domain := "https://pkg.go.dev"
+	sc := bufio.NewScanner(os.Stdin)
+	sc.Scan()
+
+	if sc.Err() != nil {
+		fmt.Println("Couldn't read input")
+		return
+	}
+	domain := sc.Text()
 
 	curDir, err := os.Getwd()
 	if err != nil {
+		fmt.Println(err)
 		return
 	}
 	curDir = filepath.Join(curDir, "web")
 
 	fmt.Printf("Downloading into %v", curDir)
 
-	indexPage, err1 := DownloadPage(domain)
-	if err1 != nil {
+	indexPage, err := DownloadPage(domain)
+	if err != nil {
+		fmt.Println(err)
 		return
 	}
 
