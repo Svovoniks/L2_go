@@ -65,9 +65,11 @@ func NewStore[T interface{}]() *Store[T] {
 func (s *Store[T]) add(obj *T) int {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
-	s.objMap[s.firstFreeIdx] = obj
+	idx := s.firstFreeIdx
+	s.objMap[idx] = obj
+
 	s.firstFreeIdx++
-	return s.firstFreeIdx - 1
+	return idx
 }
 
 func (s *Store[T]) get(id int) (*T, error) {
@@ -94,8 +96,8 @@ func (s *Store[T]) iterate() func(func(int, *T) bool) {
 }
 
 func (s *Store[T]) update(id int, newObj *T) error {
-    s.mutex.Lock()
-    defer s.mutex.Unlock()
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
 	if _, ok := s.objMap[id]; ok {
 		s.objMap[id] = newObj
 		return nil
@@ -105,8 +107,8 @@ func (s *Store[T]) update(id int, newObj *T) error {
 }
 
 func (s *Store[T]) delete(id int) error {
-    s.mutex.Lock()
-    defer s.mutex.Unlock()
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
 	if _, ok := s.objMap[id]; ok {
 		delete(s.objMap, id)
 		return nil
@@ -116,29 +118,45 @@ func (s *Store[T]) delete(id int) error {
 }
 
 // POST /create_event
-func createEvent(userIdx int, event *Event, userStore Store[User]) bool {
-	if user, err := userStore.get(userIdx); err == nil {
-		user.EventStore.add(event)
-		return true
+func createEvent(userIdx int, event *Event, userStore *Store[User]) (int, error) {
+	user, err := userStore.get(userIdx)
+	if err != nil {
+		return -1, err
 	}
-	return false
+
+	idx := user.EventStore.add(event)
+	event.Id = idx
+	return idx, nil
 }
 
 // POST /update_event
-func updateEvent(userIdx int, eventIdx int, newEvent *Event, userStore *Store[User]) bool {
-	if user, err := userStore.get(userIdx); err == nil {
-		user.EventStore.update(eventIdx, newEvent)
-		return true
+func updateEvent(userIdx int, eventIdx int, newEvent *Event, userStore *Store[User]) error {
+	user, err := userStore.get(userIdx)
+	if err != nil {
+		return err
 	}
-	return false
+
+	err = user.EventStore.update(eventIdx, newEvent)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // POST /delete_event
-func deleteEvent(userIdx int, eventIdx int, userStore *Store[User]) bool {
-	if user, err := userStore.get(userIdx); err == nil {
-		return user.EventStore.delete(eventIdx) == nil
+func deleteEvent(userIdx int, eventIdx int, userStore *Store[User]) error {
+	user, err := userStore.get(userIdx)
+	if err != nil {
+		return err
 	}
-	return false
+
+	err = user.EventStore.delete(eventIdx)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func getEventsInTimeFrame(start time.Time, end time.Time, eventStore *Store[Event]) []*Event {
@@ -210,6 +228,15 @@ func SendResult(w http.ResponseWriter, result interface{}) {
 	w.WriteHeader(http.StatusServiceUnavailable)
 	return
 }
+func parseEventId(body []byte) (int, error) {
+	event := Event{Id: -1}
+	err := json.Unmarshal(body, &event)
+	if err != nil || event.Id == -1 {
+		return -1, err
+	}
+
+	return event.Id, nil
+}
 
 func parseEvent(body []byte, needId bool) (*Event, error) {
 	event := Event{Id: -1}
@@ -231,6 +258,19 @@ func parseEvent(body []byte, needId bool) (*Event, error) {
 	}
 
 	return &event, nil
+}
+
+func parseUsername(body []byte) (string, error) {
+	user := User{}
+	err := json.Unmarshal(body, &user)
+	if err != nil {
+		return "", err
+	}
+	if user.Name == "" {
+		return "", errors.New("Invalid user id")
+	}
+
+	return user.Name, nil
 }
 
 func parseUserIdx(body []byte) (int, error) {
@@ -260,17 +300,18 @@ func HandleCreateEvent(w http.ResponseWriter, r *http.Request, userStore *Store[
 	}
 
 	event, err := parseEvent(body, false)
+	if err != nil {
+		SendError(w, err, 400)
+		return
+	}
 
-	user, err := userStore.get(userIdx)
+	idx, err := createEvent(userIdx, event, userStore)
 	if err != nil {
 		SendError(w, err, 500)
 		return
 	}
 
-	fmt.Println(event)
-
-	idx := user.EventStore.add(event)
-	SendResult(w, strconv.Itoa(idx))
+	SendResult(w, idx)
 }
 
 func HandleUpdateEvent(w http.ResponseWriter, r *http.Request, userStore *Store[User]) {
@@ -287,20 +328,17 @@ func HandleUpdateEvent(w http.ResponseWriter, r *http.Request, userStore *Store[
 	}
 
 	event, err := parseEvent(body, true)
-
-	user, err := userStore.get(userIdx)
 	if err != nil {
+		SendError(w, err, 400)
+		return
+	}
+
+	if err := updateEvent(userIdx, event.Id, event, userStore); err != nil {
 		SendError(w, err, 500)
 		return
 	}
 
-	fmt.Println(event)
-
-	if err := user.EventStore.update(event.Id, event); err == nil {
-		SendResult(w, "Success")
-	}
-
-	SendError(w, errors.New("No such event"), 500)
+	SendResult(w, "Success")
 }
 
 func HandleDeleteEvent(w http.ResponseWriter, r *http.Request, userStore *Store[User]) {
@@ -316,18 +354,16 @@ func HandleDeleteEvent(w http.ResponseWriter, r *http.Request, userStore *Store[
 		return
 	}
 
-	event, err := parseEvent(body, true)
+	eventId, err := parseEventId(body)
 
-	user, err := userStore.get(userIdx)
 	if err != nil {
 		SendError(w, err, 500)
 		return
 	}
 
-	fmt.Println(event)
-
-	if err := user.EventStore.delete(event.Id); err == nil {
+	if err := deleteEvent(userIdx, eventId, userStore); err != nil {
 		SendResult(w, "Success")
+		return
 	}
 
 	SendError(w, errors.New("No such event"), 500)
@@ -435,6 +471,25 @@ func HandleEvnetsMonth(w http.ResponseWriter, r *http.Request, userStore *Store[
 	SendResult(w, events)
 }
 
+func HandleCreateUser(w http.ResponseWriter, r *http.Request, userStore *Store[User]) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		SendError(w, err, 400)
+		return
+	}
+
+	username, err := parseUsername(body)
+	if err != nil {
+		SendError(w, err, 400)
+		return
+	}
+
+	user := NewUser(username)
+	idx := userStore.add(user)
+
+	SendResult(w, idx)
+}
+
 func StorageWrapper(fn func(http.ResponseWriter, *http.Request, *Store[User]), userStore *Store[User]) func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
 		fn(w, r, userStore)
@@ -451,6 +506,7 @@ func LoggerMiddleware(handler http.Handler) http.Handler {
 func runServer(port int) {
 	userStore := NewStore[User]()
 
+	createUserHandler := http.HandlerFunc(StorageWrapper(HandleCreateUser, userStore))
 	createEventHandler := http.HandlerFunc(StorageWrapper(HandleCreateEvent, userStore))
 	updateEventHandler := http.HandlerFunc(StorageWrapper(HandleUpdateEvent, userStore))
 	deleteEventHandler := http.HandlerFunc(StorageWrapper(HandleDeleteEvent, userStore))
@@ -458,9 +514,10 @@ func runServer(port int) {
 	weekEventsHandler := http.HandlerFunc(StorageWrapper(HandleEvnetsWeek, userStore))
 	monthEventsHandler := http.HandlerFunc(StorageWrapper(HandleEvnetsMonth, userStore))
 
+	http.Handle("/create_user", LoggerMiddleware(createUserHandler))
 	http.Handle("/create_event", LoggerMiddleware(createEventHandler))
 	http.Handle("/update_event", LoggerMiddleware(updateEventHandler))
-	http.Handle("/delete_events", LoggerMiddleware(deleteEventHandler))
+	http.Handle("/delete_event", LoggerMiddleware(deleteEventHandler))
 	http.Handle("/events_for_day", LoggerMiddleware(dayEventsHandler))
 	http.Handle("/events_for_week", LoggerMiddleware(weekEventsHandler))
 	http.Handle("/events_for_month", LoggerMiddleware(monthEventsHandler))
