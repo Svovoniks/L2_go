@@ -83,15 +83,12 @@ func (s *Store[T]) get(id int) (*T, error) {
 	return nil, errors.New("No such obj")
 }
 
-func (s *Store[T]) iterate() func(func(int, *T) bool) {
+func (s *Store[T]) iterate(apply func(*T)) {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
-	return func(yield func(int, *T) bool) {
-		for key, val := range s.objMap {
-			if !yield(key, val) {
-				return
-			}
-		}
+
+	for _, val := range s.objMap {
+		apply(val)
 	}
 }
 
@@ -162,11 +159,11 @@ func deleteEvent(userIdx int, eventIdx int, userStore *Store[User]) error {
 func getEventsInTimeFrame(start time.Time, end time.Time, eventStore *Store[Event]) []*Event {
 	var res []*Event
 
-	for _, ev := range eventStore.iterate() {
+	eventStore.iterate(func(ev *Event) {
 		if start.Before(ev.EventTime) && end.After(ev.EventTime) {
 			res = append(res, ev)
 		}
-	}
+	})
 
 	return res
 }
